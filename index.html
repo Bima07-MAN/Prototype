@@ -1,0 +1,470 @@
+```react
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  addDoc, 
+  getDoc, 
+  getDocs, 
+  onSnapshot, 
+  updateDoc, 
+  deleteDoc 
+} from 'firebase/firestore';
+
+// --- CONFIGURASI FIREBASE ---
+// Konfigurasi ini menggunakan variabel global yang disediakan oleh environment pembaca.
+// Jika tidak tersedia, akan menggunakan fallback tiruan (mock) agar aplikasi tetap berjalan lancar secara lokal.
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : {
+      apiKey: "mock-api-key-photo-pro",
+      authDomain: "mock-photo-pro.firebaseapp.com",
+      projectId: "mock-photo-pro",
+      storageBucket: "mock-photo-pro.appspot.com",
+      messagingSenderId: "1234567890",
+      appId: "1:1234567890:web:mockid"
+    };
+
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'photo-pro-app';
+
+// Inisialisasi Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [role, setRole] = useState('client'); // 'admin' atau 'client'
+  const [activeTab, setActiveTab] = useState('home'); // admin: 'dashboard', 'orders', 'galleries'. client: 'home', 'my-gallery', 'my-invoice'
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  // States untuk Formulir Pemesanan Baru (Client)
+  const [clientName, setClientName] = useState('');
+  const [clientEmail, setClientEmail] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
+  const [packageType, setPackageType] = useState('Wedding Premium');
+  const [bookingDate, setBookingDate] = useState('');
+  const [notes, setNotes] = useState('');
+
+  // States untuk Manajemen Admin
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [newPhotoUrl, setNewPhotoUrl] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [invoiceAmount, setInvoiceAmount] = useState('');
+  const [paymentStatus, setPaymentStatus] = useState('Unpaid');
+
+  // Notifikasi Kustom (Ganti alert)
+  const [notification, setNotification] = useState(null);
+
+  const showNotification = (message, type = 'success') => {
+    setNotification({ message, type });
+    setTimeout(() => {
+      setNotification(null);
+    }, 4000);
+  };
+
+  // --- 1. PROSES AUTENTIKASI (RULE 3) ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Gagal melakukan login otomatis:", err);
+        showNotification("Gagal terhubung ke server autentikasi", "error");
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // --- 2. RETRIEVE DATA DENGAN FIRESTORE (RULE 1 & RULE 2) ---
+  useEffect(() => {
+    if (!user) return;
+
+    // Lokasi koleksi publik sesuai RULE 1
+    const ordersCol = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+    
+    // Menggunakan onSnapshot untuk update data secara real-time
+    const unsubscribe = onSnapshot(ordersCol, (snapshot) => {
+      const ordersData = [];
+      snapshot.forEach((doc) => {
+        ordersData.push({ id: doc.id, ...doc.data() });
+      });
+      // Diurutkan di memori Javascript agar mematuhi RULE 2 (Tanpa Query Kompleks)
+      ordersData.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      setOrders(ordersData);
+    }, (error) => {
+      console.error("Gagal memuat data dari Firestore:", error);
+      showNotification("Error memuat data real-time", "error");
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Tambahkan data dummy bawaan jika database kosong untuk kenyamanan demo pertama
+  useEffect(() => {
+    if (orders.length === 0 && !loading && user) {
+      const createDummyData = async () => {
+        const ordersCol = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+        const dummy = [
+          {
+            clientName: "Budi Santoso",
+            clientEmail: "budi@example.com",
+            clientPhone: "08123456789",
+            packageType: "Pre-Wedding Gold",
+            bookingDate: "2026-07-15",
+            notes: "Tema vintage outdoor",
+            status: "Editing",
+            paymentStatus: "Partial",
+            invoiceAmount: 4500000,
+            photos: [
+              "https://images.unsplash.com/photo-1519741497674-611481863552?w=800&auto=format&fit=crop&q=80",
+              "https://images.unsplash.com/photo-1511285560929-80b456fea0bc?w=800&auto=format&fit=crop&q=80"
+            ],
+            createdAt: new Date().toISOString()
+          },
+          {
+            clientName: "Siti Aminah",
+            clientEmail: "siti@example.com",
+            clientPhone: "08776655443",
+            packageType: "Family Portrait",
+            bookingDate: "2026-06-28",
+            notes: "Sesi foto studio 5 anggota keluarga",
+            status: "Booking",
+            paymentStatus: "Unpaid",
+            invoiceAmount: 1500000,
+            photos: [],
+            createdAt: new Date(Date.now() - 86400000).toISOString()
+          }
+        ];
+        
+        for (const item of dummy) {
+          await addDoc(ordersCol, item);
+        }
+      };
+      createDummyData();
+    }
+  }, [orders, loading, user]);
+
+  // --- 3. LOGIKA OPERASI DATABASE (CREATE, UPDATE, DELETE) ---
+  
+  // Klien membuat pesanan baru
+  const handleCreateOrder = async (e) => {
+    e.preventDefault();
+    if (!clientName || !clientEmail || !clientPhone || !bookingDate) {
+      showNotification("Mohon lengkapi seluruh kolom formulir wajib!", "error");
+      return;
+    }
+
+    try {
+      const ordersCol = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+      await addDoc(ordersCol, {
+        clientName,
+        clientEmail,
+        clientPhone,
+        packageType,
+        bookingDate,
+        notes,
+        status: 'Booking', // Status Awal
+        paymentStatus: 'Unpaid',
+        invoiceAmount: packageType === 'Wedding Premium' ? 7500000 : (packageType === 'Pre-Wedding Gold' ? 4500000 : 1500000),
+        photos: [],
+        createdAt: new Date().toISOString()
+      });
+
+      showNotification("Pemesanan Sesi Foto berhasil dikirim! Admin akan segera memproses.");
+      // Reset Form
+      setClientName('');
+      setClientEmail('');
+      setClientPhone('');
+      setNotes('');
+      setBookingDate('');
+    } catch (err) {
+      console.error(err);
+      showNotification("Gagal mengirim pesanan. Coba lagi.", "error");
+    }
+  };
+
+  // Admin memperbarui status pesanan
+  const handleUpdateStatus = async (orderId, newStatus) => {
+    try {
+      const orderDoc = doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId);
+      await updateDoc(orderDoc, { status: newStatus });
+      showNotification(`Status pesanan berhasil diubah menjadi: ${newStatus}`);
+    } catch (err) {
+      console.error(err);
+      showNotification("Gagal mengubah status", "error");
+    }
+  };
+
+  // Admin memperbarui status pembayaran dan nominal invoice
+  const handleUpdatePayment = async (e) => {
+    e.preventDefault();
+    if (!selectedOrder) return;
+    try {
+      const orderDoc = doc(db, 'artifacts', appId, 'public', 'data', 'orders', selectedOrder.id);
+      await updateDoc(orderDoc, { 
+        paymentStatus,
+        invoiceAmount: Number(invoiceAmount)
+      });
+      showNotification("Detail invoice & pembayaran berhasil diperbarui!");
+      // Sinkronkan state lokal terpilih
+      setSelectedOrder({
+        ...selectedOrder,
+        paymentStatus,
+        invoiceAmount: Number(invoiceAmount)
+      });
+    } catch (err) {
+      console.error(err);
+      showNotification("Gagal memperbarui invoice", "error");
+    }
+  };
+
+  // Admin mengunggah foto ke proyek klien (Simulasi input URL atau unggahan Base64)
+  const handleAddPhoto = async (e) => {
+    e.preventDefault();
+    if (!selectedOrder) return;
+    if (!newPhotoUrl) {
+      showNotification("Masukkan URL gambar atau gunakan foto contoh", "error");
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const orderDoc = doc(db, 'artifacts', appId, 'public', 'data', 'orders', selectedOrder.id);
+      const updatedPhotos = [...(selectedOrder.photos || []), newPhotoUrl];
+      
+      await updateDoc(orderDoc, { photos: updatedPhotos });
+      setSelectedOrder({ ...selectedOrder, photos: updatedPhotos });
+      setNewPhotoUrl('');
+      showNotification("Foto berhasil ditambahkan ke galeri klien!");
+    } catch (err) {
+      console.error(err);
+      showNotification("Gagal mengunggah foto", "error");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Fungsi instan memilih gambar acak berkualitas tinggi sebagai mock upload
+  const useSamplePhoto = (category) => {
+    const samples = [
+      "https://images.unsplash.com/photo-1606800052052-a08af7148866?w=800&auto=format&fit=crop&q=80", // Wedding
+      "https://images.unsplash.com/photo-1519225495810-7512c696505a?w=800&auto=format&fit=crop&q=80", // Couple
+      "https://images.unsplash.com/photo-1509631179647-0177331693ae?w=800&auto=format&fit=crop&q=80", // Fashion
+      "https://images.unsplash.com/photo-1542038784456-1ea8e935640e?w=800&auto=format&fit=crop&q=80"  // Camera
+    ];
+    const randomUrl = samples[Math.floor(Math.random() * samples.length)] + `&sig=${Math.floor(Math.random() * 1000)}`;
+    setNewPhotoUrl(randomUrl);
+  };
+
+  // Fitur konversi File lokal ke Base64 (Simulasi Penyimpanan Foto)
+  const handleLocalImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    if (file.size > 800000) { // Limit 800KB untuk keamanan penyimpanan database Firestore gratisan
+      showNotification("Ukuran file terlalu besar! Gunakan gambar di bawah 800KB atau pakai URL contoh gratis kami.", "error");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setNewPhotoUrl(reader.result);
+      showNotification("File lokal sukses diproses ke format Base64!");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Menghapus pesanan
+  const handleDeleteOrder = async (orderId) => {
+    if (!window.confirm("Apakah Anda yakin ingin menghapus data pesanan ini selamanya?")) return;
+    try {
+      const orderDoc = doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId);
+      await deleteDoc(orderDoc);
+      setSelectedOrder(null);
+      showNotification("Pesanan berhasil dihapus.");
+    } catch (err) {
+      console.error(err);
+      showNotification("Gagal menghapus pesanan", "error");
+    }
+  };
+
+  // Helper mendapatkan warna status
+  const getStatusBadgeClass = (status) => {
+    switch (status) {
+      case 'Booking': return 'bg-blue-900/40 text-blue-300 border border-blue-800';
+      case 'Shooting': return 'bg-amber-900/40 text-amber-300 border border-amber-800';
+      case 'Editing': return 'bg-purple-900/40 text-purple-300 border border-purple-800';
+      case 'Completed': return 'bg-emerald-900/40 text-emerald-300 border border-emerald-800';
+      default: return 'bg-gray-800 text-gray-300';
+    }
+  };
+
+  const getPaymentBadgeClass = (status) => {
+    switch (status) {
+      case 'Unpaid': return 'bg-red-900/40 text-red-300 border border-red-800';
+      case 'Partial': return 'bg-orange-900/40 text-orange-300 border border-orange-800';
+      case 'Paid': return 'bg-emerald-900/40 text-emerald-300 border border-emerald-800';
+      default: return 'bg-gray-800 text-gray-300';
+    }
+  };
+
+  // Fitur Salin Tautan Portal Klien
+  const handleCopyPortalLink = (order) => {
+    const fakeLink = `${window.location.origin}/?orderId=${order.id}`;
+    // Fallback document.execCommand('copy') sesuai pedoman sistem iFrame
+    const tempInput = document.createElement('input');
+    tempInput.value = fakeLink;
+    document.body.appendChild(tempInput);
+    tempInput.select();
+    document.execCommand('copy');
+    document.body.removeChild(tempInput);
+    showNotification("Link Portal Klien berhasil disalin ke clipboard!");
+  };
+
+  return (
+    <div className="min-height-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-lime-300 selection:text-neutral-900 flex flex-col min-h-screen pb-12">
+      
+      {/* HEADER UTAMA */}
+      <header className="border-b border-neutral-900 bg-neutral-950/80 backdrop-blur sticky top-0 z-50 px-4 py-3 sm:px-8 flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 rounded-full bg-lime-400 flex items-center justify-center text-neutral-950 font-bold text-xl shadow-[0_0_15px_rgba(163,230,53,0.3)]">
+            📸
+          </div>
+          <div>
+            <h1 className="text-lg font-bold tracking-tight">PHOTO PRO</h1>
+            <p className="text-xs text-neutral-500">Premium Management & Client Gallery</p>
+          </div>
+        </div>
+
+        {/* SWITCH ROLE & UTILITY */}
+        <div className="flex items-center gap-2 bg-neutral-900 p-1.5 rounded-lg border border-neutral-800">
+          <button 
+            onClick={() => { setRole('client'); setActiveTab('home'); }}
+            className={`px-3 py-1 text-xs font-semibold rounded-md transition ${role === 'client' ? 'bg-lime-400 text-neutral-950' : 'text-neutral-400 hover:text-white'}`}
+          >
+            Klien Portal
+          </button>
+          <button 
+            onClick={() => { setRole('admin'); setActiveTab('dashboard'); }}
+            className={`px-3 py-1 text-xs font-semibold rounded-md transition ${role === 'admin' ? 'bg-lime-400 text-neutral-950' : 'text-neutral-400 hover:text-white'}`}
+          >
+            Studio Admin
+          </button>
+        </div>
+      </header>
+
+      {/* NOTIFIKASI */}
+      {notification && (
+        <div className="fixed top-20 right-4 sm:right-8 z-50 max-w-sm w-full animate-bounce">
+          <div className={`p-4 rounded-xl shadow-2xl flex items-center gap-3 border ${
+            notification.type === 'success' 
+              ? 'bg-neutral-900 border-lime-500/40 text-lime-300' 
+              : 'bg-neutral-900 border-red-500/40 text-red-300'
+          }`}>
+            <span className="text-xl">{notification.type === 'success' ? '🛡️' : '🚨'}</span>
+            <p className="text-sm font-medium">{notification.message}</p>
+          </div>
+        </div>
+      )}
+
+      {/* LOADING SCREEN */}
+      {loading ? (
+        <div className="flex-grow flex flex-col items-center justify-center py-20">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-lime-400"></div>
+          <p className="mt-4 text-sm text-neutral-400">Menghubungkan ke database aman...</p>
+        </div>
+      ) : (
+        <main className="flex-grow px-4 py-6 sm:px-8 max-w-7xl mx-auto w-full">
+          
+          {/* ======================================================== */}
+          {/* =================== AREA PORTAL KLIEN =================== */}
+          {/* ======================================================== */}
+          {role === 'client' && (
+            <div>
+              {/* Client Menu Tabs */}
+              <div className="flex gap-4 border-b border-neutral-900 mb-8 pb-px">
+                <button 
+                  onClick={() => setActiveTab('home')}
+                  className={`pb-3 text-sm font-medium border-b-2 transition ${activeTab === 'home' ? 'border-lime-400 text-white' : 'border-transparent text-neutral-400 hover:text-white'}`}
+                >
+                  Pesan Sesi Foto
+                </button>
+                <button 
+                  onClick={() => setActiveTab('my-gallery')}
+                  className={`pb-3 text-sm font-medium border-b-2 transition ${activeTab === 'my-gallery' ? 'border-lime-400 text-white' : 'border-transparent text-neutral-400 hover:text-white'}`}
+                >
+                  Cari Galeri Klien Anda
+                </button>
+              </div>
+
+              {/* TAB 1: Booking & Info */}
+              {activeTab === 'home' && (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+                  
+                  {/* Hero & Promo */}
+                  <div className="lg:col-span-7 space-y-6">
+                    <div className="bg-gradient-to-br from-neutral-900 to-neutral-950 p-6 sm:p-8 rounded-2xl border border-neutral-800 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-64 h-64 bg-lime-400/10 rounded-full blur-3xl -z-10"></div>
+                      <span className="bg-lime-400/20 text-lime-300 text-xs px-3 py-1 rounded-full font-bold border border-lime-400/30">STUDIO FOTOGRAFI PRO</span>
+                      <h2 className="text-3xl sm:text-4xl font-extrabold tracking-tight mt-4 mb-3 leading-tight">
+                        Mengabadikan Momen <span className="text-lime-300">Berharga</span> dengan Detail Sempurna
+                      </h2>
+                      <p className="text-neutral-400 text-sm sm:text-base leading-relaxed">
+                        Kami menyediakan layanan studio, pre-wedding, dokumentasi pernikahan, hingga foto keluarga profesional dengan pengiriman hasil instan, aman, & estetik melalui dashboard digital eksklusif Anda.
+                      </p>
+                      
+                      <div className="mt-8 grid grid-cols-3 gap-4 text-center">
+                        <div className="bg-neutral-950/50 p-3 rounded-lg border border-neutral-800">
+                          <h4 className="text-xl font-bold text-white">100%</h4>
+                          <p className="text-xs text-neutral-500">Aman & Privat</p>
+                        </div>
+                        <div className="bg-neutral-950/50 p-3 rounded-lg border border-neutral-800">
+                          <h4 className="text-xl font-bold text-white">Base64</h4>
+                          <p className="text-xs text-neutral-500">Cloud Storage</p>
+                        </div>
+                        <div className="bg-neutral-950/50 p-3 rounded-lg border border-neutral-800">
+                          <h4 className="text-xl font-bold text-white">Premium</h4>
+                          <p className="text-xs text-neutral-500">Hasil Foto</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Informasi Paket */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div className="bg-neutral-900 p-5 rounded-xl border border-neutral-800 hover:border-lime-500/50 transition">
+                        <span className="text-2xl">📸</span>
+                        <h4 className="font-bold text-white mt-3">Family Portrait</h4>
+                        <p className="text-xs text-neutral-500 mt-1">Sesi studio keluarga premium</p>
+                        <p className="text-lime-400 font-bold mt-3 text-sm">Rp 1.500.000</p>
+                      </div>
+                      <div className="bg-neutral-900 p-5 rounded-xl border border-neutral-800 hover:border-lime-500/50 transition">
+                        <span className="text-2xl">💍</span>
+                        <h4 className="font-bold text-white mt-3">Pre-Wedding Gold</h4>
+                        <p className="text-xs text-neutral-500 mt-1">Konsep outdoor & indoor pilihan</p>
+                        <p className="text-lime-400 font-bold mt-3 text-sm">Rp 4.500.000</p>
+                      </div>
+                      <div className="bg-neutral-900 p-5 rounded-xl border bor
